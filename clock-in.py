@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # 打卡脚本修改自ZJU-nCov-Hitcarder的开源代码，感谢这位同学开源的代码
-# 更新版本：适配浙大认证系统可能的页面变化
+# 更新版本：适配浙大认证系统可能的页面变化，无外部依赖
 
 import requests
 import json
@@ -9,7 +9,6 @@ import re
 import datetime
 import time
 import sys
-from bs4 import BeautifulSoup
 
 
 class DaKa(object):
@@ -58,9 +57,12 @@ class DaKa(object):
         print(f"🎯 最终URL: {response.url}")
         
         # 保存调试信息
-        with open('debug_login_page.html', 'w', encoding='utf-8') as f:
-            f.write(response.text)
-        print("💾 已保存登录页面到 debug_login_page.html")
+        try:
+            with open('debug_login_page.html', 'w', encoding='utf-8') as f:
+                f.write(response.text)
+            print("💾 已保存登录页面到 debug_login_page.html")
+        except Exception as e:
+            print(f"⚠️  保存调试页面失败: {e}")
         
         # 检查常见情况
         page_lower = response.text.lower()
@@ -81,6 +83,22 @@ class DaKa(object):
             print(f"⚠️  检测到页面问题: {', '.join(detected_issues)}")
         
         return detected_issues
+
+    def _extract_input_value(self, html, input_name):
+        """通过正则提取input字段的值，替代BeautifulSoup功能"""
+        patterns = [
+            rf'<input[^>]*name\s*=\s*"{input_name}"[^>]*value\s*=\s*"([^"]*)"[^>]*>',
+            rf"<input[^>]*name\s*=\s*'{input_name}'[^>]*value\s*=\s*'([^']*)'[^>]*>",
+            rf'<input[^>]*value\s*=\s*"([^"]*)"[^>]*name\s*=\s*"{input_name}"[^>]*>',
+            rf"<input[^>]*value\s*=\s*'([^']*)'[^>]*name\s*=\s*'{input_name}'[^>]*>"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+            if match:
+                return match.group(1)
+        
+        return None
 
     def login(self):
         """Login to ZJU platform"""
@@ -115,32 +133,24 @@ class DaKa(object):
         execution = self._safe_regex_search(execution_patterns, res.text, "execution字段")
         
         if not execution:
-            # 使用BeautifulSoup作为备选方案
-            print("🔄 尝试使用BeautifulSoup解析...")
-            try:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                execution_input = (soup.find('input', {'name': 'execution'}) or 
-                                 soup.find('input', {'name': 'lt'}))
-                if execution_input and execution_input.get('value'):
-                    execution = execution_input.get('value')
-                    print(f"✅ BeautifulSoup找到字段: {execution[:30]}...")
-                else:
-                    print("❌ BeautifulSoup也未找到相关字段")
-                    
-                    # 输出页面中所有input字段名用于调试
-                    print("📋 页面中的input字段:")
-                    inputs = soup.find_all('input', {'name': True})
-                    for inp in inputs[:15]:  # 显示前15个
-                        name = inp.get('name')
-                        value = inp.get('value', 'N/A')
-                        if len(str(value)) > 50:
-                            value = str(value)[:50] + "..."
-                        print(f"   - {name}: {value}")
-                    
-                    raise LoginError('无法提取登录所需字段，页面结构可能已重大变化')
-            except Exception as e:
-                print(f"❌ BeautifulSoup解析失败: {e}")
-                raise LoginError('页面解析失败，请检查网络连接或页面结构')
+            print("🔄 尝试使用input标签解析...")
+            execution = self._extract_input_value(res.text, 'execution')
+            if not execution:
+                execution = self._extract_input_value(res.text, 'lt')
+            
+            if execution:
+                print(f"✅ 通过input标签解析找到字段: {execution[:30]}...")
+            else:
+                print("❌ 无法提取登录所需字段")
+                
+                # 输出页面中所有input字段名用于调试
+                print("📋 尝试提取页面中的input字段:")
+                input_names = re.findall(r'name\s*=\s*["\']([^"\']+)["\']', res.text)
+                unique_names = list(set(input_names))[:15]  # 去重并显示前15个
+                for name in unique_names:
+                    print(f"   - {name}")
+                
+                raise LoginError('无法提取登录所需字段，页面结构可能已重大变化')
         
         # 获取RSA公钥
         print("🔑 获取加密公钥...")
